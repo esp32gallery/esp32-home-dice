@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Home Dice · Browser Replay</title>
+<style>
+  *{box-sizing:border-box}body{margin:0;background:#f5f6f2;color:#252821;font:15px/1.5 system-ui,sans-serif}.wrap{max-width:800px;margin:36px auto;padding:0 20px}.device{width:min(72vw,480px);aspect-ratio:1;margin:24px auto;background:#111;border:12px solid #272a28;border-radius:40px;overflow:hidden;box-shadow:0 14px 44px #2222}iframe{width:100%;height:100%;border:0;display:block}h1{font-size:23px}.note{color:#757b6e;font-size:13px;max-width:600px}.controls{display:flex;justify-content:center;align-items:center;gap:10px;flex-wrap:wrap}button,select{font:inherit;border:1px solid #d1d6cb;border-radius:8px;background:white;padding:9px 13px}button{cursor:pointer}button:hover{background:#eef1e9}.status{text-align:center;color:#737a6d;font-size:13px;min-height:24px}
+</style>
+<main class="wrap">
+  <h1>Home Dice · 3D Dice</h1>
+  <p class="note">Interactive replay of pre-rendered project frames. This page does not run or simulate ESP32 firmware.</p>
+  <div class="device"><iframe id="dice" title="Home Dice rendered frame replay" sandbox="allow-scripts" src="player.html?lang=en"></iframe></div>
+  <div class="controls"><label>Target <select id="target"><option>1</option><option>2</option><option selected>3</option><option>4</option><option>5</option><option>6</option></select></label><button id="roll">Roll dice</button><button id="step">Next frame</button></div>
+  <p id="status" class="status" role="status" aria-live="polite">Loading replay…</p>
+</main>
+<script>
+const frame=document.querySelector('#dice'),status=document.querySelector('#status');
+frame.addEventListener('load',()=>{status.textContent='Replay frame loaded.'});
+addEventListener('message',event=>{if(event.source!==frame.contentWindow)return;const data=event.data||{};if(data.type==='status'&&typeof data.text==='string')status.textContent=data.text;if(data.type==='error')status.textContent=data.text||'Replay failed to load.'});
+function send(message){frame.contentWindow.postMessage(message,'*')}
+document.querySelector('#target').addEventListener('change',event=>send({type:'param',key:'target',value:event.target.value}));
+document.querySelector('#roll').addEventListener('click',()=>send({type:'action',id:'roll'}));
+document.querySelector('#step').addEventListener('click',()=>send({type:'action',id:'step'}));
+</script>
+</html>
