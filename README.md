@@ -1,3 +1,17 @@
+> ## 🗄️ This repository is archived / 本仓库已归档
+>
+> The dice now lives inside the **Family Hub** system, as one of its apps:
+> **https://github.com/esp32gallery/esp32-family-hub**
+>
+> The device runs **one** firmware with two apps on its home screen — `Roll Dice` and `Voice Notes`.
+> Rolling dice here is no longer a separate project; flashing this repo gives you an older
+> renderer that is no longer maintained.
+>
+> 骰子现在是 **Family Hub** 系统里的一个 App，最新实现在：
+> **https://github.com/esp32gallery/esp32-family-hub**（`family-hub/family-hub.ino`）
+>
+> 这里保留作历史记录。**不要从这里刷机** —— 拿到的是旧渲染器。
+
 # Home Dice · 3D Dice
 
 A 3D dice roller for the **Waveshare ESP32-S3-Touch-AMOLED-2.16**. Roll with the touchscreen, shake gesture, or the board's GPIO18 button. The Arduino sketch renders the dice locally on the 480×480 AMOLED.
