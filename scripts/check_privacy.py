@@ -1,4 +1,5 @@
 """Reject likely personal data and credentials without printing matched values."""
+import os
 import re
 import subprocess
 import sys
@@ -36,9 +37,13 @@ def main():
         for line, label in findings(content):
             print(f'{name}:{line}: possible {label} (value withheld)')
             failed = True
-    identities = subprocess.check_output(['git', '-C', str(root), 'show', '-s', '--format=%ae%n%ce', 'HEAD']).decode()
+    commit_ref = os.environ.get('PRIVACY_COMMIT_REF') or 'HEAD'
+    if commit_ref != 'HEAD' and not re.fullmatch(r'[0-9a-f]{40}', commit_ref):
+        print('Invalid privacy commit reference')
+        return 1
+    identities = subprocess.check_output(['git', '-C', str(root), 'show', '-s', '--format=%ae%n%ce', commit_ref]).decode()
     if re.search(RULES['personal email'], identities):
-        print('HEAD: personal author or committer email; use a GitHub no-reply address (value withheld)')
+        print('Source commit: personal author or committer email; use a GitHub no-reply address (value withheld)')
         failed = True
     if not failed:
         print('Privacy check passed: tracked text and current commit identity.')
