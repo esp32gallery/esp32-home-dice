@@ -72,4 +72,10 @@ This checks the renderer's face orientation and writes sample PPM images to `/tm
 
 ## Source and license
 
-This repository contains the Home Dice project files and rendered preview assets. No separate license grant is included in this initial publication.
+ESP32 Gallery-authored firmware, browser code, rendered preview frames, and
+documentation in this repository are released under the
+[MIT License](LICENSE). Third-party libraries retain their own licenses; see
+the build documentation and upstream package metadata before redistribution.
+
+本仓库中由 ESP32 Gallery 创作的固件、网页代码、渲染预览帧与文档采用
+[MIT License](LICENSE)。第三方库仍适用各自许可证，分发前请查阅构建文档和上游包元数据。
