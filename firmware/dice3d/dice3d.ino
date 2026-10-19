@@ -1,10 +1,10 @@
 /*
- * 3D 骰子 — Waveshare ESP32-S3-Touch-AMOLED-2.16 (CO5300 480x480 + CST9220 + QMI8658)
+ * 3D Dice — Waveshare ESP32-S3-Touch-AMOLED-2.16 (CO5300 480x480 + CST9220 + QMI8658)
  *
- * 纯软件 3D：四元数姿态 → 透视投影 → 凸多边形扫描线光栅化 → 2x 放大上屏
- * 内部按 240x240 渲染，脏矩形放大到 480x480 只推变化区域（CO5300 要求偶数对齐）
+ * Software-only 3D:quaternion orientation → perspective projection → convex polygon scanline rasterization → 2× display scaling
+ * renders internally at 240×240 and scales dirty rectangles to 480×480, transferring only changed areas (CO5300 requires even alignment)
  *
- * 触发掷骰：触摸 / 摇一摇 / 板载 GPIO18 按键
+ * Roll input: touch, shake gesture, or onboard GPIO18 button
  */
 
 #include <Arduino.h>
@@ -18,20 +18,20 @@
 #include "HWCDC.h"
 #include "dice_sdf.h"
 
-// ---------------------------------------------------------------- 渲染器选择
-//   0 = 旧的 6 平面扫描线（省 CPU，画质一般）
-//   1 = SDF 光线步进（画质好，吃 CPU）
-// 可用 -DDICE_USE_SDF=1 覆盖
+// ---------------------------------------------------------------- Renderer selection
+//   0 = legacy 6-face scanline renderer (lower CPU use, basic quality)
+//   1 = SDF ray marching (higher quality, higher CPU use)
+// Override with -DDICE_USE_SDF=1.
 #ifndef DICE_USE_SDF
 #define DICE_USE_SDF 1
 #endif
 
-// SDF 内部渲染分辨率（1:1 直推，不放大）
+// Internal SDF render resolution (1:1 display, no scaling)
 #ifndef SDF_RES
 #define SDF_RES 240
 #endif
 
-// ------------------------------------------------------------------ 引脚
+// ------------------------------------------------------------------ Pins
 #define LCD_SDIO0 4
 #define LCD_SDIO1 5
 #define LCD_SDIO2 6
@@ -45,7 +45,7 @@
 #define TP_RST    40
 #define KEY_PIN   18
 
-// ------------------------------------------------------------------ 渲染参数
+// ------------------------------------------------------------------ Render parameters
 #define SCR_W  480
 #define SCR_H  480
 #define LOW_W  240
@@ -55,27 +55,27 @@
 #define FOCAL  400.0f
 #define CAM_Z  4.7f
 
-// 落位后的轻微倾斜：让骰子同时露出正面 + 顶面 + 侧面，产生立体感
-#define TILT_X (-0.78f)   // 前倾：让朝上的那面转向相机
+// Slight resting tilt to show the front, top, and side faces for depth.
+#define TILT_X (-0.78f)   // Tilt forward to turn the upward-facing side toward the camera.
 #define TILT_Y (0.55f)
 
-// 骰子尺寸：边长 1.0（-0.5 .. +0.5）
+// Die size: edge length 1.0 (-0.5 .. +0.5)
 #define HALF     0.5f
 #define PIP_OFF  0.29f
 #define PIP_RAD  0.082f
 
-// 动画时长
-// ---------------------------------------------------------------- 调试日志
-// ⚠️ 重要：USB CDC 的 printf 在「没人读串口」时会阻塞！
-//    缓冲写满后 Serial.printf 卡住 → 整个 UI 冻结（实测 fps 从 30 掉到 0.5）。
-//    所以运行时日志默认关闭，只在需要时打开，并且一律走下面的 SAFE_LOG
-//    （先看 availableForWrite，写不下就丢，绝不阻塞）。
+// Animation duration
+// ---------------------------------------------------------------- Debug logging
+// IMPORTANT: USB CDC printf can block when nothing is reading the serial port.
+//    When the buffer fills, Serial.printf can stall and freeze the UI (measured FPS dropped from 30 to 0.5).
+//    Runtime logging is disabled by default. Enable it only when needed and always use SAFE_LOG below
+//    (checks availableForWrite first; drops output when the buffer is full, never blocks).
 #define DICE_DEBUG_LOG 1
-// 诊断用：开机 2 秒后自动翻滚一次，并逐帧打日志
+// Diagnostics: roll once two seconds after startup and log each frame.
 #define DICE_SELFTEST 0
 
-// 用宏而不是函数：函数会成为「文件里第一个函数」，Arduino 自动生成的
-// 函数原型会被插到 struct V3 之前 → 编译报 'V3' does not name a type。
+// Use a macro instead of a function: Arduino treats it as the first function in the file and generates
+// a prototype before struct V3, causing “V3 does not name a type” during compilation.
 #if DICE_DEBUG_LOG
   #define SAFE_LOG(...) do { \
       if (USBSerial.availableForWrite() >= 96) USBSerial.printf(__VA_ARGS__); \
@@ -87,7 +87,7 @@
 #define SPIN_MS    780
 #define ROLL_MS   1150
 
-// ------------------------------------------------------------------ 基础向量/四元数
+// ------------------------------------------------------------------ Base vectors and quaternions
 struct V3 { float x, y, z; };
 struct Quat { float w, x, y, z; };
 
@@ -126,7 +126,7 @@ static inline Quat qaxis(V3 axis, float ang) {
   Quat r = {cosf(h), a.x * s, a.y * s, a.z * s};
   return r;
 }
-// 把 a 转到 b 的最短弧
+// Shortest arc that rotates a to b
 static Quat qfromto(V3 a, V3 b) {
   a = vnorm(a); b = vnorm(b);
   float d = vdot(a, b);
@@ -165,33 +165,33 @@ static Quat qslerp(Quat a, Quat b, float t) {
   return qnorm(r);
 }
 
-// ------------------------------------------------------------------ 骰子几何
+// ------------------------------------------------------------------ Die geometry
 struct Face {
-  V3 n;        // 外法线
-  V3 c;        // 面心
-  V3 r;        // 面内 right
-  V3 u;        // 面内 up
-  uint8_t val; // 点数
+  V3 n;        // outward normal
+  V3 c;        // face center
+  V3 r;        // face-local right
+  V3 u;        // face-local up
+  uint8_t val; // pip value
 };
 
-// 对面点数和为 7：+Z=1, -Z=6, +Y=2, -Y=5, +X=3, -X=4
-// 西方标准骰子（右手 / CCW）：1 朝前(+Z)、2 朝上(+Y) 时，4 在右(+X)、3 在左(-X)
-//   口诀「1 up, 2 left, 3 right」→ 从 1-2-3 角外侧看 1→2→3 为逆时针
-//   对面和恒为 7：1-6 / 2-5 / 3-4
-//   ⚠️ 早期版本 +X=3 / -X=4 是中式镜像（CW），已按 StandardDice.pdf 纠正
-//   点位布局：2/3 在对角线，4/5 在四角(5 加中心)，6 为两列各三
+// Opposite face values sum to 7：+Z=1, -Z=6, +Y=2, -Y=5, +X=3, -X=4
+// Standard Western die handedness (right-handed / counter-clockwise): with 1 forward (+Z) and 2 up (+Y), 4 is right (+X) and 3 is left (-X).
+//   Mnemonic: “1 up, 2 left, 3 right”; viewed from the 1-2-3 corner, 1→2→3 is counter-clockwise.
+//   Opposite faces always sum to 7: 1-6 / 2-5 / 3-4.
+//   Earlier versions mirrored +X=3 / -X=4 (clockwise); corrected to match StandardDice.pdf.
+//   Pip layout: 2/3 use diagonals, 4/5 use four corners (5 also has a center pip), and 6 uses two columns of three.
 static const Face FACES[6] = {
-  { { 0, 0, 1}, { 0, 0, HALF}, { 1, 0, 0}, {0, 1, 0}, 1 },  // +Z 前
-  { { 0, 0,-1}, { 0, 0,-HALF}, {-1, 0, 0}, {0, 1, 0}, 6 },  // -Z 后
-  { { 1, 0, 0}, { HALF, 0, 0}, { 0, 0,-1}, {0, 1, 0}, 4 },  // +X 右
-  { {-1, 0, 0}, {-HALF, 0, 0}, { 0, 0, 1}, {0, 1, 0}, 3 },  // -X 左
-  { { 0, 1, 0}, { 0, HALF, 0}, { 1, 0, 0}, {0, 0,-1}, 2 },  // +Y 上
-  { { 0,-1, 0}, { 0,-HALF, 0}, { 1, 0, 0}, {0, 0, 1}, 5 },  // -Y 下
+  { { 0, 0, 1}, { 0, 0, HALF}, { 1, 0, 0}, {0, 1, 0}, 1 },  // +Z forward
+  { { 0, 0,-1}, { 0, 0,-HALF}, {-1, 0, 0}, {0, 1, 0}, 6 },  // -Z rear
+  { { 1, 0, 0}, { HALF, 0, 0}, { 0, 0,-1}, {0, 1, 0}, 4 },  // +X right
+  { {-1, 0, 0}, {-HALF, 0, 0}, { 0, 0, 1}, {0, 1, 0}, 3 },  // -X left
+  { { 0, 1, 0}, { 0, HALF, 0}, { 1, 0, 0}, {0, 0,-1}, 2 },  // +Y up
+  { { 0,-1, 0}, { 0,-HALF, 0}, { 1, 0, 0}, {0, 0, 1}, 5 },  // -Y down
 };
 
 
-// 点数 -> 面内 2D 坐标（单位：立方体边长比例）
-// 最多 6 个点
+// Pip value to 2D face coordinates (relative to the cube edge length).
+// Up to six pips.
 static const float PIPS[7][6][2] = {
   {},                                                                  // 0
   {{0, 0}},                                                            // 1
@@ -206,19 +206,19 @@ static const float PIPS[7][6][2] = {
    {-PIP_OFF, PIP_OFF}, {PIP_OFF, PIP_OFF}},                           // 6
 };
 
-// ------------------------------------------------------------------ 颜色
+// ------------------------------------------------------------------ Colors
 static inline uint16_t rgb565(int r, int g, int b) {
   return (uint16_t)(((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3));
 }
 static const uint16_t COL_BLACK = 0x0000;
-static const uint16_t COL_PIP   = rgb565(252, 250, 246);   // 白点
-// 红底（鲜红）
+static const uint16_t COL_PIP   = rgb565(252, 250, 246);   // white pips
+// bright red body
 static const int BASE_R = 214, BASE_G = 38, BASE_B = 38;
 
-// 光照方向（由表面指向光源）：左上偏前
+// Light direction (from the surface toward the source): upper-left and slightly forward.
 static const V3 LIGHT = {-0.42f, 0.62f, -0.66f};
 
-// ------------------------------------------------------------------ 全局
+// ------------------------------------------------------------------ Globals
 Arduino_DataBus *bus = new Arduino_ESP32QSPI(
     LCD_CS, LCD_SCLK, LCD_SDIO0, LCD_SDIO1, LCD_SDIO2, LCD_SDIO3);
 Arduino_CO5300 *gfx = new Arduino_CO5300(
@@ -228,14 +228,14 @@ static uint16_t *lowBuf = nullptr;  // LOW_W*LOW_H RGB565
 static uint16_t *outBuf = nullptr;  // SCR_W*SCR_H RGB565
 
 #if DICE_USE_SDF
-// SDF 渲染器：1:1 直接渲染到 SDF_RES×SDF_RES，再 2× 放大推屏
+// SDF renderer: render directly at SDF_RES×SDF_RES, then scale 2× for display.
 static dice::Renderer sdfR;
 static uint16_t *sdfBuf = nullptr;              // SDF_RES² RGB565
 static int sdfW = SDF_RES, sdfH = SDF_RES;
-static uint32_t sdfFrameMs = 0;                 // 实测每帧耗时
+static uint32_t sdfFrameMs = 0;                 // measured frame time
 #endif
 
-// 画面是否需要重绘：静止时跳过整个渲染，省 CPU/电、也不拖慢输入响应
+// Whether the frame needs redraw; skip rendering while idle to save CPU and power and keep input responsive.
 static bool frameDirty = true;
 #if DICE_USE_SDF
 #endif
@@ -245,7 +245,7 @@ static bool firstFrame = true;
 
 HWCDC USBSerial;
 
-// 传感器
+// Sensors
 static SensorQMI8658 qmi;
 static IMUdata acc;
 static bool imuOk = false;
@@ -255,7 +255,7 @@ static int16_t tx[2], ty[2];
 static volatile bool touchPending = false;
 static bool touchOk = false;
 
-// ------------------------------------------------------------------ 状态
+// ------------------------------------------------------------------ State
 enum Mode { MODE_IDLE, MODE_ROLLING };
 static Mode mode = MODE_IDLE;
 
@@ -271,14 +271,14 @@ static uint32_t lastRollMs = 0;
 static uint8_t lastValue = 0;
 static float hopY = 0.0f;
 
-// 亮度 / 防烧屏
+// Brightness / burn-in prevention
 static int curBrightness = 200;
 static uint32_t lastBrightnessCheck = 0;
 
-// 帧率统计
+// Frame-rate statistics
 static uint32_t fpsFrames = 0, fpsLastMs = 0;
 
-// ------------------------------------------------------------------ 光栅化
+// ------------------------------------------------------------------ Rasterization
 static inline void fillRow(uint16_t *buf, int y, int xl, int xr, uint16_t c) {
   if (y < 0 || y >= LOW_H) return;
   if (xl < 0) xl = 0;
@@ -288,7 +288,7 @@ static inline void fillRow(uint16_t *buf, int y, int xl, int xr, uint16_t c) {
   for (int x = xl; x <= xr; x++) p[x] = c;
 }
 
-// 凸多边形扫描线填充
+// Convex polygon scanline fill
 static void fillConvex(const float *px, const float *py, int n, uint16_t color) {
   float fminY = py[0], fmaxY = py[0];
   for (int i = 1; i < n; i++) {
@@ -321,7 +321,7 @@ static void fillConvex(const float *px, const float *py, int n, uint16_t color) 
   }
 }
 
-// 多边形在某一行的 x 跨度
+// Polygon x-span on a scanline
 static void polySpan(const float *px, const float *py, int n, float yc, float *out) {
   float xl = 1e30f, xr = -1e30f;
   for (int i = 0; i < n; i++) {
@@ -340,7 +340,7 @@ static void polySpan(const float *px, const float *py, int n, float yc, float *o
   out[1] = xr;
 }
 
-// 实心圆，裁剪到面多边形内（否则近侧视时点会溢出面外）
+// Solid circle clipped to the face polygon so pips do not spill over at shallow viewing angles.
 static void fillCircleClipped(int cx, int cy, int rad, uint16_t color,
                               const float *px, const float *py, int n) {
   if (rad < 1) rad = 1;
@@ -364,14 +364,14 @@ static void fillCircleClipped(int cx, int cy, int rad, uint16_t color,
   }
 }
 
-// ------------------------------------------------------------------ 渲染一帧
+// ------------------------------------------------------------------ Render one frame
 struct Proj { float x, y, z; bool ok; };
 
 static void renderDice(Quat q, float yOff) {
-  // 1) 清空低分辨率缓冲
+  // 1) Clear the low-resolution buffer
   memset(lowBuf, 0, (size_t)LOW_W * LOW_H * 2);
 
-  // 2) 顶点变换 + 投影
+  // 2) Transform and project vertices
   V3 verts[8];
   Proj proj[8];
   static const float CORN[8][3] = {
@@ -393,7 +393,7 @@ static void renderDice(Quat q, float yOff) {
     }
   }
 
-  // 3) 可见面收集
+  // 3) Collect visible faces
   struct VisFace { int idx; float depth; V3 n; };
   VisFace vis[6];
   int nvis = 0;
@@ -403,14 +403,14 @@ static void renderDice(Quat q, float yOff) {
     V3 cc = qrot(fc.c, q);
     cc.y += yOff;
     cc.z += CAM_Z;
-    // 相机在原点看向 +Z：法线朝向相机 => dot(n, center) < 0
+    // Camera is at the origin and looks toward +Z; a normal faces the camera when dot(n, center) < 0.
     if (vdot(nr, cc) >= 0.0f) continue;
     vis[nvis].idx = f;
     vis[nvis].depth = cc.z;
     vis[nvis].n = nr;
     nvis++;
   }
-  // 画家算法：远 -> 近
+  // Painter’s algorithm: far to near.
   for (int i = 1; i < nvis; i++) {
     VisFace t = vis[i];
     int j = i - 1;
@@ -418,12 +418,12 @@ static void renderDice(Quat q, float yOff) {
     vis[j + 1] = t;
   }
 
-  // 4) 逐面绘制
+  // 4) Draw each face
   for (int vi = 0; vi < nvis; vi++) {
     const Face &fc = FACES[vis[vi].idx];
 
-    // 该面 4 个顶点索引（与 faceCorner 的顺序一致）
-    // 面 f 的 4 个角对应顶点索引，按 (-,-) (+,-) (+,+) (-,+) 排列
+    // The face’s four vertex indices, in faceCorner order.
+    // Vertex indices for face f’s four corners, ordered as (-,-), (+,-), (+,+), (-,+).
     static const int FV[6][4] = {
       {4, 5, 6, 7},  // +Z
       {1, 0, 3, 2},  // -Z
@@ -442,7 +442,7 @@ static void renderDice(Quat q, float yOff) {
     }
     if (!ok) continue;
 
-    // 光照
+    // Lighting
     float lam = vdot(vis[vi].n, vnorm(LIGHT));
     if (lam < 0.0f) lam = 0.0f;
     float inten = 0.38f + 0.62f * lam;
@@ -451,7 +451,7 @@ static void renderDice(Quat q, float yOff) {
 
     fillConvex(px, py, 4, body);
 
-    // 点数
+    // pip value
     int val = fc.val;
     for (int p = 0; p < val; p++) {
       float a = PIPS[val][p][0];
@@ -464,7 +464,7 @@ static void renderDice(Quat q, float yOff) {
       float sx = LOW_W * 0.5f + FOCAL * pc.x / pc.z;
       float sy = LOW_H * 0.5f - FOCAL * pc.y / pc.z;
       float rr = FOCAL * PIP_RAD / pc.z;
-      // 按光照把点调暗一点点，避免纯黑发死
+      // Slightly shade pips with the lighting so they do not look flat black.
       uint16_t pc2 = COL_PIP;
       if (inten < 0.55f) pc2 = rgb565(52, 50, 56);
       fillCircleClipped((int)(sx + 0.5f), (int)(sy + 0.5f), (int)(rr + 0.5f), pc2, px, py, 4);
@@ -472,7 +472,7 @@ static void renderDice(Quat q, float yOff) {
   }
 }
 
-// 计算骰子在低分辨率空间的包围盒
+// Compute the die bounds in low-resolution space.
 static void diceBBox(Quat q, float yOff, int *bx0, int *by0, int *bx1, int *by1) {
   float mnx = 1e30f, mny = 1e30f, mxx = -1e30f, mxy = -1e30f;
   static const float CORN[8][3] = {
@@ -498,7 +498,7 @@ static void diceBBox(Quat q, float yOff, int *bx0, int *by0, int *bx1, int *by1)
   *by1 = (int)ceilf(mxy) + 2;
 }
 
-// 把低分辨率缓冲的矩形放大 2 倍推屏（脏矩形 + 偶数对齐）
+// Scale the low-resolution buffer rectangle 2× for display (dirty rectangle with even alignment).
 static void blitRect(int lx0, int ly0, int lx1, int ly1) {
   if (lx0 < 0) lx0 = 0;
   if (ly0 < 0) ly0 = 0;
@@ -506,7 +506,7 @@ static void blitRect(int lx0, int ly0, int lx1, int ly1) {
   if (ly1 > LOW_H - 1) ly1 = LOW_H - 1;
   if (lx0 > lx1 || ly0 > ly1) return;
 
-  // 低分辨率 -> 屏幕坐标（偶数对齐）
+  // Low-resolution to screen coordinates (even-aligned).
   int sx0 = lx0 * SCALE;
   int sy0 = ly0 * SCALE;
   int sx1 = (lx1 + 1) * SCALE - 1;
@@ -524,7 +524,7 @@ static void blitRect(int lx0, int ly0, int lx1, int ly1) {
   int h = sy1 - sy0 + 1;
   if (w <= 0 || h <= 0) return;
 
-  // 放大到 outBuf
+  // Scale into outBuf.
   for (int y = 0; y < h; y += 2) {
     int sy = (sy0 + y) >> 1;
     const uint16_t *srow = lowBuf + (size_t)sy * LOW_W;
@@ -543,11 +543,11 @@ static void blitRect(int lx0, int ly0, int lx1, int ly1) {
 }
 
 #if DICE_USE_SDF
-// SDF 路径：渲染到 sdfBuf，再整块 2× 放大推屏（CO5300 要求偶数对齐）
+// SDF path: render to sdfBuf, then scale the full region 2× for display (CO5300 requires even alignment).
 static void drawFrameSDF() {
   uint32_t t0 = micros();
 
-  // 四元数：固件用 Quat，SDF 核心也用 Quat（同名同结构，直接传）
+  // Both the firmware and SDF core use the same Quat type, so it can be passed directly.
   dice::Quat q;
   q.w = qCur.w; q.x = qCur.x; q.y = qCur.y; q.z = qCur.z;
 
@@ -558,9 +558,9 @@ static void drawFrameSDF() {
 
   sdfFrameMs = (micros() - t0) / 1000;
 
-  // ★ 只推骰子的包围盒，不是整屏 —— 整屏 480² 在 QSPI 40MHz 下要 23ms，
-  //   而骰子只占约 75% 边长（面积 ~56%），能省掉近一半推屏时间。
-  // CO5300 要求起始坐标/宽/高全为偶数，所以往下取偶。
+  // Transfer only the die bounds, not the full screen — a full 480² frame takes 23 ms at 40 MHz QSPI,
+  //   while the die occupies about 75% of each dimension (~56% of the area), saving nearly half the transfer time.
+  // CO5300 requires even start coordinates, width, and height, so round bounds down to even values.
   int lx0 = sdfR.bboxX0, ly0 = sdfR.bboxY0;
   int lx1 = sdfR.bboxX1, ly1 = sdfR.bboxY1;
   if (lx0 < 0) lx0 = 0;
@@ -583,7 +583,7 @@ static void drawFrameSDF() {
   int w = sx1 - sx0 + 1, h = sy1 - sy0 + 1;
   if (w <= 0 || h <= 0) return;
 
-  // 2× 放大到 outBuf（只放大这块）
+  // 2× Scale into outBuf (this region only).
   for (int y = 0; y < h; y += 2) {
     int ly = (sy0 + y) >> 1;
     const uint16_t *src = sdfBuf + (size_t)ly * sdfW;
@@ -600,7 +600,7 @@ static void drawFrameSDF() {
 #endif
 
 static void drawFrame() {
-  if (!frameDirty) return;      // 画面没变，不重绘
+  if (!frameDirty) return;      // Frame unchanged; skip redraw.
   frameDirty = false;
 
 #if DICE_USE_SDF
@@ -623,12 +623,12 @@ static void drawFrame() {
   blitRect(ux0, uy0, ux1, uy1);
 }
 
-// ------------------------------------------------------------------ 掷骰
+// ------------------------------------------------------------------ Roll the die
 static Quat targetForValue(int v, float rollAngle) {
   int fi = -1;
   for (int i = 0; i < 6; i++) if (FACES[i].val == v) { fi = i; break; }
   if (fi < 0) fi = 0;
-  // 真实骰子：点数看的是「朝上」那一面，不是朝向相机那一面
+  // For a real die, the result is the face pointing up, not the face pointing toward the camera.
   Quat align = qfromto(FACES[fi].n, v3(0, 1, 0));
   Quat roll = qaxis(v3(0, 1, 0), rollAngle);
   Quat tilt = qmul(qaxis(v3(1, 0, 0), TILT_X), qaxis(v3(0, 1, 0), TILT_Y));
@@ -641,7 +641,7 @@ static void startRoll() {
   int v = 1 + (esp_random() % 6);
   lastValue = v;
 
-  // 随机翻滚轴（避免几乎正对坐标轴导致看起来不转）
+  // Randomize the spin axis so it does not align with a coordinate axis and appear motionless.
   V3 ax = v3(((int)(esp_random() % 2001) - 1000) / 1000.0f,
              ((int)(esp_random() % 2001) - 1000) / 1000.0f,
              ((int)(esp_random() % 2001) - 1000) / 1000.0f);
@@ -649,7 +649,7 @@ static void startRoll() {
   spinAxis = vnorm(ax);
   spinSpeed = 11.0f + (esp_random() % 700) / 100.0f;  // 11 ~ 18 rad/s
 
-  // 落位后只允许很小的面内自转，保证点数端正、不歪
+  // Allow only a small in-plane rotation when settling so the pips stay upright.
   float rollAngle = (((int)(esp_random() % 300)) - 150) / 1000.0f;  // -0.15 ~ +0.15
   qTarget = targetForValue(v, rollAngle);
 
@@ -676,7 +676,7 @@ static void updateAnimation(uint32_t now) {
            el, qCur.w, qCur.x, qCur.y, qCur.z, hopY);
 
   if (el < SPIN_MS) {
-    // 自由翻滚
+    // Free tumble
     static uint32_t lastMs = 0;
     if (lastMs == 0) lastMs = rollStartMs;
     float dt = (now - lastMs) / 1000.0f;
@@ -685,12 +685,12 @@ static void updateAnimation(uint32_t now) {
     qCur = qnorm(qmul(qCur, qaxis(spinAxis, spinSpeed * dt)));
     frameDirty = true;
 
-    // 抛起
+    // Lift
     float t = (float)el / (float)SPIN_MS;
     hopY = 0.42f * sinf(t * (float)M_PI);
     qSlerpFrom = qCur;
   } else if (el < ROLL_MS) {
-    // 缓动落位
+    // Ease into the resting pose
     float t = (float)(el - SPIN_MS) / (float)(ROLL_MS - SPIN_MS);
     // easeOutCubic
     float e = 1.0f - powf(1.0f - t, 3.0f);
@@ -706,7 +706,7 @@ static void updateAnimation(uint32_t now) {
   }
 }
 
-// ------------------------------------------------------------------ 输入
+// ------------------------------------------------------------------ Input
 void IRAM_ATTR onTouchISR() { touchPending = true; }
 
 static bool pollTouch() {
@@ -755,7 +755,7 @@ static bool pollKey(uint32_t now) {
   return false;
 }
 
-// ------------------------------------------------------------------ 亮度
+// ------------------------------------------------------------------ Brightness
 static void updateBrightness(uint32_t now, bool input) {
   if (input) {
     lastInputMs = now;
@@ -770,8 +770,8 @@ static void updateBrightness(uint32_t now, bool input) {
 
   uint32_t idle = now - lastInputMs;
   int want = 200;
-  if (idle > 180000UL) want = 12;       // 3 分钟：极暗
-  else if (idle > 45000UL) want = 55;   // 45 秒：变暗
+  if (idle > 180000UL) want = 12;       // 3 minutes: very dim
+  else if (idle > 45000UL) want = 55;   // 45 seconds: dim
 
   if (want != curBrightness) {
     curBrightness = want;
@@ -814,9 +814,9 @@ void setup() {
 
   pinMode(KEY_PIN, INPUT_PULLUP);
 
-  // ⚠️ 顺序照抄官方 05_LVGL_Widgets 例程：触摸 → IMU → 再 gfx->begin()
-  //    我原来是先 gfx->begin() 再初始化触摸，插上电池后出现过 touch not found
-  // 触摸
+  // IMPORTANT: follow the initialization order in the official 05_LVGL_Widgets example: touch → IMU → gfx->begin().
+  //    Previously, initializing gfx->begin() before touch caused “touch not found” when running on battery.
+  // Touch
   touch.setPins(TP_RST, TP_INT);
   touchOk = touch.begin(Wire, CST92XX_SLAVE_ADDRESS, IIC_SDA, IIC_SCL);
   if (touchOk) {
@@ -842,7 +842,7 @@ void setup() {
     USBSerial.println("imu not found (ignored)");
   }
 
-  // 显示屏
+  // Display
   if (!gfx->begin()) {
     USBSerial.println("gfx->begin() failed");
     while (true) delay(1000);
@@ -851,7 +851,7 @@ void setup() {
   gfx->fillScreen(COL_BLACK);
   gfx->setBrightness(200);
 
-  // 缓冲（PSRAM）
+  // Buffers (PSRAM)
   lowBuf = (uint16_t *)heap_caps_malloc((size_t)LOW_W * LOW_H * 2, MALLOC_CAP_SPIRAM);
   outBuf = (uint16_t *)heap_caps_malloc((size_t)SCR_W * SCR_H * 2, MALLOC_CAP_SPIRAM);
   if (!lowBuf || !outBuf) {
@@ -870,7 +870,7 @@ void setup() {
 
 
 
-  // 初始姿态：1 点朝前
+  // Initial orientation: 1 faces forward.
   qTarget = targetForValue(1, 0.35f);
   qCur = qTarget;
   lastInputMs = millis();
@@ -892,7 +892,7 @@ void loop() {
   static uint32_t stRollAt = 0;
   if (!stDone) {
     if (stRollAt == 0) {
-      stRollAt = now + 2000;           // 开机 2 秒后
+      stRollAt = now + 2000;           // 2 seconds after startup
       SAFE_LOG("[selftest] armed, will roll at +2000ms\n");
     } else if (now >= stRollAt && mode == MODE_IDLE) {
       SAFE_LOG("[selftest] >>> triggering roll\n");
@@ -928,6 +928,6 @@ void loop() {
     fpsLastMs = now;
   }
 
-  // 让出 CPU：否则 USB CDC / IDLE 任务可能饿死，加剧 printf 阻塞
+  // Yield the CPU so USB CDC / IDLE tasks do not starve and worsen printf blocking.
   delay(1);
 }

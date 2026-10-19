@@ -12,9 +12,6 @@
    child -> parent: ready {name, w, h, actions, params}, status {text}
    parent -> child: action {id}, param {key, value}
 */
-const zh = new URLSearchParams(location.search).get('lang') === 'zh';
-document.documentElement.lang = zh ? 'zh-CN' : 'en';
-const text = (en, cn) => zh ? cn : en;
 const FRAMES = 13;
 const cv = document.getElementById("c");
 const ctx = cv.getContext("2d");
@@ -25,7 +22,7 @@ const send = (m) => parent.postMessage(m, "*");
 
 async function prep() {
   const my = ++token;
-  send({ type: "status", text: text("Loading frames…", "正在加载画面…") });
+  send({ type: "status", text: "Loading frames…" });
   try {
     const imgs = await Promise.all(
       Array.from({ length: FRAMES }, (_, i) =>
@@ -42,7 +39,7 @@ async function prep() {
     show(0);
     send({type:"loaded"});
   } catch (e) {
-    send({ type: "error", text: text("Frame files could not be loaded", "画面文件加载失败") });
+    send({ type: "error", text: "Frame files could not be loaded" });
   }
 }
 
@@ -52,7 +49,7 @@ function show(i) {
     ctx.clearRect(0, 0, cv.width, cv.height);
     ctx.drawImage(seq[i], 0, 0);
   }
-  send({ type: "status", text: text(`Frame ${at}/${FRAMES - 1} · Target ${target}`, `第 ${at}/${FRAMES - 1} 帧 · 落点 ${target}`) });
+  send({ type: "status", text: `Frame ${at}/${FRAMES - 1} · Target ${target}` });
 }
 
 async function roll() {
@@ -65,7 +62,7 @@ async function roll() {
       show(i);
     }
     face = target;
-    send({ type: "status", text: text(`Result ${target} · ${Math.round(performance.now() - t0)} ms`, `落点 ${target} · ${Math.round(performance.now() - t0)} 毫秒`) });
+    send({ type: "status", text: `Result ${target} · ${Math.round(performance.now() - t0)} ms` });
   } finally {
     busy = false;
   }
@@ -87,15 +84,15 @@ addEventListener("message", (e) => {
 
 send({
   type: "ready",
-  name: text("Home Dice · 3D Dice", "家庭小站 · 3D 骰子"),
+  name: "Home Dice · 3D Dice",
   w: 480,
   h: 480,
   actions: [
-    { id: "roll", label: text("Roll dice", "抛骰子") },
-    { id: "step", label: text("Next frame", "逐帧") },
+    { id: "roll", label: "Roll dice" },
+    { id: "step", label: "Next frame" },
   ],
   params: [
-    { key: "target", label: text("Target", "落点"), options: ["1", "2", "3", "4", "5", "6"], value: "3" },
+    { key: "target", label: "Target", options: ["1", "2", "3", "4", "5", "6"], value: "3" },
   ],
 });
 

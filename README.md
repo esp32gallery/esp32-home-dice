@@ -60,22 +60,9 @@ This checks the renderer's face orientation and writes sample PPM images to `/tm
 - `firmware/dice3d/` — Arduino firmware, SDF renderer, native host check
 - `preview/` — browser replay UI and rendered frames
 
-## 中文
-
-这是为 **Waveshare ESP32-S3-Touch-AMOLED-2.16** 制作的 3D 骰子。可以通过触摸、摇晃或 GPIO18 按键掷骰。Arduino 固件在 480×480 AMOLED 上本地绘制骰子。
-
-仓库也提供浏览器预览：选择落点、播放或逐帧查看预渲染画面。**它是交互式画面回放，不是 ESP32 固件仿真器。**网页不会运行 Arduino 固件，也不会模拟屏幕总线、触摸芯片或 IMU。
-
-上面的动画和截图均由项目渲染帧生成，不代表真机屏幕录像，也不证明固件已在当前板子上运行。
-
-从仓库根目录运行 `python3 -m http.server 8000`，访问 `/preview/`。固件编译参数及原生渲染器检查命令见上方英文说明和 `firmware/dice3d/BUILD.md`。
-
 ## Source and license
 
 ESP32 Gallery-authored firmware, browser code, rendered preview frames, and
 documentation in this repository are released under the
 [MIT License](LICENSE). Third-party libraries retain their own licenses; see
 the build documentation and upstream package metadata before redistribution.
-
-本仓库中由 ESP32 Gallery 创作的固件、网页代码、渲染预览帧与文档采用
-[MIT License](LICENSE)。第三方库仍适用各自许可证，分发前请查阅构建文档和上游包元数据。

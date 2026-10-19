@@ -1,11 +1,11 @@
-// host_test.cpp —— 在 Mac 上跑 dice_sdf.h，验证正确性 + 量相对成本
+// host_test.cpp — run dice_sdf.h on macOS to check correctness and compare relative costs
 //
-// 编译： g++ -O2 -std=c++17 -o /tmp/dice_host host_test.cpp
-// 运行： /tmp/dice_host [输出目录]
+// Build: g++ -O2 -std=c++17 -o /tmp/dice_host host_test.cpp
+// Run: /tmp/dice_host [output-directory]
 //
-// 产出：
-//   sdf_<res>_<val>.ppm  各点数落位后的渲染图（可直接看）
-//   控制台打印每档分辨率的 ms/帧 与 SDF 求值次数
+// Outputs:
+//   sdf_<res>_<val>.ppm  rendered images for each resting face (ready to view)
+//   console report of ms/frame and SDF evaluation count at each resolution
 #include "dice_sdf.h"
 #include <cstdio>
 #include <cstdlib>
@@ -18,7 +18,7 @@ using namespace dice;
 
 static void writePPM(const char *path, const uint16_t *buf, int W, int H) {
   FILE *f = fopen(path, "wb");
-  if (!f) { printf("  打不开 %s\n", path); return; }
+  if (!f) { printf("  Cannot open %s\n", path); return; }
   fprintf(f, "P6\n%d %d\n255\n", W, H);
   std::vector<uint8_t> row((size_t)W * 3);
   for (int y = 0; y < H; y++) {
@@ -41,15 +41,15 @@ int main(int argc, char **argv) {
   const int nsizes = sizeof(sizes) / sizeof(sizes[0]);
 
   printf("================================================================\n");
-  printf(" SDF 骰子渲染器 · 离线验证（Mac）\n");
+  printf(" SDF die renderer · offline validation (macOS)\n");
   printf("================================================================\n\n");
 
-  // ---------------------------------------------------------------- 1) 正确性
-  printf("【1】6 个点数落位后「朝上的面」是否正确\n");
+  // ---------------------------------------------------------------- 1) Correctness
+  printf("[1] Verify that the correct face points up for all six results\n");
   bool allOk = true;
   for (int v = 1; v <= 6; v++) {
     Quat q = targetForValue(v, 0.0f);
-    // 哪个面法线的 +Y 分量最大 = 朝上的面
+    // The face normal with the greatest +Y component is the upward-facing face.
     int bestVal = 0; float bestY = -2.0f;
     for (int i = 0; i < 6; i++) {
       V3 n = qrot(FACES[i].n, q);
@@ -57,15 +57,15 @@ int main(int argc, char **argv) {
     }
     bool ok = (bestVal == v);
     if (!ok) allOk = false;
-    printf("   点数 %d → 顶面 %d   upness=%.3f   %s\n",
-           v, bestVal, bestY, ok ? "OK" : "**不符**");
+    printf("   Face value %d → top face %d   upness=%.3f   %s\n",
+           v, bestVal, bestY, ok ? "OK" : "**MISMATCH**");
   }
-  printf("   %s\n\n", allOk ? "全部正确 ✓" : "有错误 ✗");
+  printf("   %s\n\n", allOk ? "All correct ✓" : "Errors found ✗");
 
-  // ---------------------------------------------------------------- 2) 各分辨率耗时
-  printf("【2】各分辨率的渲染耗时（Mac，仅作相对参考）\n");
+  // ---------------------------------------------------------------- 2) Render time by resolution
+  printf("[2] Render time by resolution (macOS, for relative comparison only)\n");
   printf("   %-8s %-10s %-10s %-12s %-12s\n",
-         "分辨率", "ms/帧", "FPS", "步进像素", "SDF求值");
+         "Resolution", "ms/frame", "FPS", "Pixels marched", "SDF evaluations");
 
   std::vector<uint16_t> big;
   int Wbig = 0, Hbig = 0;
@@ -79,7 +79,7 @@ int main(int argc, char **argv) {
 
     Quat q = targetForValue(3, 0.0f);
 
-    // 预热
+    // Warm up
     r.render(q, 0.0f);
 
     const int N = 10;
@@ -96,8 +96,8 @@ int main(int argc, char **argv) {
   }
   printf("\n");
 
-  // ---------------------------------------------------------------- 3) 输出图片
-  printf("【3】输出各点数落位的渲染图（240×240）\n");
+  // ---------------------------------------------------------------- 3) Write images
+  printf("[3] Write rendered images for each resting face (240×240)\n");
   {
     std::vector<uint16_t> buf((size_t)240 * 240);
     Renderer r;
@@ -112,8 +112,8 @@ int main(int argc, char **argv) {
     }
   }
 
-  // ---------------------------------------------------------------- 4) 关键统计
-  printf("\n【4】每像素成本分析（240² 满屏，斜视姿态）\n");
+  // ---------------------------------------------------------------- 4) Key statistics
+  printf("\n[4] Per-pixel cost analysis (full 240² frame, angled pose)\n");
   {
     std::vector<uint16_t> buf((size_t)240 * 240);
     Renderer r;
@@ -123,13 +123,13 @@ int main(int argc, char **argv) {
 
     double perPixSteps = r.statPixels ? (double)r.statSteps / r.statPixels : 0;
     double perPixSdf   = r.statPixels ? (double)r.statSdf   / r.statPixels : 0;
-    printf("   包围盒内像素     %u\n", r.statPixels);
-    printf("   命中像素         %u\n", r.statHits);
-    printf("   总步进次数       %u\n", r.statSteps);
-    printf("   平均步进/像素    %.2f  (上限 maxSteps=56)\n", perPixSteps);
-    printf("   SDF 求值/像素    %.2f  (步进 + 4 次法线 + 4 次AO)\n", perPixSdf);
-    printf("\n   → 若 ESP32-S3 单次 SDF 求值约 X 微秒，\n");
-    printf("     则 240² 一帧 ≈ %.0f 次求值 × X\n", perPixSdf * r.statHits);
+    printf("   Pixels in bounds     %u\n", r.statPixels);
+    printf("   Hit pixels         %u\n", r.statHits);
+    printf("   Total march steps       %u\n", r.statSteps);
+    printf("   Average steps/pixel    %.2f  (maximum maxSteps=56)\n", perPixSteps);
+    printf("   SDF evaluations/pixel    %.2f  (marching + 4 normal samples + 4 AO samples)\n", perPixSdf);
+    printf("\n   → If one SDF evaluation takes about X microseconds on ESP32-S3,\n");
+    printf("     then one 240² frame takes about %.0f evaluations × X\n", perPixSdf * r.statHits);
   }
 
   printf("\n================================================================\n");
